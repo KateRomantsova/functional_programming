@@ -13,3 +13,6 @@ project/project/
 *.iml
 *.iws
 .DS_Store
+
+# Temporary files
+tmp/
