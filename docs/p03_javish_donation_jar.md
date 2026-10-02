@@ -133,11 +133,41 @@ sbt "runMain JavishDemo"
 
 ### Тест
 
+Код тесту ([`src/test/scala/JavishPainSpec.scala`](https://github.com/vplanto/functional_programming/blob/main/02_javish/src/test/scala/JavishPainSpec.scala)):
+
+```scala
+import javish.DonationJar
+import org.scalatest.funsuite.AnyFunSuite
+
+class JavishPainSpec extends AnyFunSuite {
+
+  test("balance повинен дорівнювати сумі донатів у журналі") {
+    val jar = new DonationJar("invariant-test", 10_000.0)
+
+    jar.donate(100.0, "Alice")
+    jar.donate(200.0, "Bob")
+    jar.applyPromoBonus(50.0)
+
+    assert(
+      jar.balance == jar.sumFromDonations(),
+      s"Дві правди: balance=${jar.balance}, сума донатів=${jar.sumFromDonations()}"
+    )
+  }
+}
+```
+
+> **Що тут відбувається:**
+> - **`AnyFunSuite`** — базовий клас із бібліотеки **ScalaTest** (головний фреймворк тестування в Scala, як JUnit для Java).
+> - **«Fun» = Function:** тести записуються декларативно як функції `test("опис") { ... }` замість анотацій `@Test`.
+> - **`assert(...)`** — перевіряє умову і друкує повідомлення, якщо вона хибна.
+
+Запуск тесту:
+
 ```bash
 sbt "testOnly JavishPainSpec"
 ```
 
-`JavishPainSpec` перевіряє інваріант: **balance == сума донатів**. На цьому коді тест **падає**.
+`JavishPainSpec` перевіряє інваріант: **balance == сума донатів**. На цьому коді тест **падає** (баланс = 350.0, а в списку донатів лише 300.0 через промо-бонус).
 
 ### Розбір: чому з'явились дві суми
 
@@ -212,7 +242,12 @@ final case class Jar(
 )
 ```
 
-`case class` — незмінний запис: зміни лише через `copy`, не через присвоєння полям. Логування (`log.info`) — не в цих функціях, а в «оболонці» програми, якщо воно взагалі потрібне.
+`case class` — незмінний запис (immutable record): дані не можна змінити «на місці», лише створити новий екземпляр через метод `copy`.
+
+- **Метод `.copy(...)`:** компілятор генерує його автоматично. Усі параметри мають значення за замовчуванням (поточні значення полів екземпляра).
+- **Іменовані аргументи (`donations = ...`):** символ `=` тут — це передача параметра за ім'ям, а не присвоєння. Ви вказуєте лише те поле, яке оновлюється, а решта полів (`id`, `goal`) залишаються без змін.
+
+Логування (`log.info`) — не в цих структурах чи функціях, а в зовнішній «оболонці» програми, якщо воно взагалі потрібне.
 
 ### Операції
 
@@ -251,7 +286,11 @@ object JarLogic {
 }
 ```
 
-`object` — **не** сервісний клас ізі станом (як `DonationJar` або Spring `@Service`). Це **синглтон-модуль**: набір функцій без полів. У Java те саме роблять класом-утилітою з `private` конструктором і `static`-методами. Після `import JarLogic._` можна писати `total(jar)` замість `JarLogic.total(jar)`.
+> **Навіщо `.view` перед `.mapValues` у `topDonors`?**
+> 1. **Вимога компілятора (Scala 2.13+ / 3):** Прямий метод `mapValues` на мапі застарів (deprecated). Щоб трансформувати лише значення без ключів, компілятор вимагає явного переходу у view: `.view.mapValues(...)`.
+> 2. **Економія пам'яті (ліниві обчислення):** `.view` працює аналогічно до **`Stream` у Java**. Він **не виділяє** проміжну `Map` у пам'яті: суми донатів рахуються «на льоту» лише під час формування фінального `.toList`.
+
+`object` — **не** сервісний клас із станом (як `DonationJar` або Spring `@Service`). Це **синглтон-модуль**: набір функцій без полів. У Java те саме роблять класом-утилітою з `private` конструктором і `static`-методами. Після `import JarLogic._` можна писати `total(jar)` замість `JarLogic.total(jar)`.
 
 **Немає** `balance` — сума і прогрес завжди з `donations`. `applyPromoBonus` з частини 1 тут **не зникає**: промо теж стає записом у журналі, а не «підкруткою» окремого поля.
 
@@ -506,7 +545,83 @@ sbt "runMain DonationApp"
 
 Так буде **ще довго**. Ви не можете одразу охопити й усвоїти все: курс іде через приклади, і вони саме такі — десь ви вже впізнаєте Java, десь лише здогадуєтесь, що відбувається. Це не провал і не «ви не встигаєте» — це звичний шлях після Одерскі: спочатку читаєте код із наміром, синтаксис підтягується поступово. Не зупиняйтесь на кожному незнайомому символі — фіксуйте **ідею** (стан, джерело правди, побічний ефект). До решти повернемось.
 
+### Для допитливих: чи можна написати функції чистіше?
+
+#### 1. Як покращити `progressPercent`:
+У нашому коді розрахунок відсотка виглядає так:
+```scala
+def progressPercent(jar: Jar): Double =
+  if (jar.goal <= 0) 0.0 else (total(jar) / jar.goal) * 100.0
+```
+Для першого знайомства після Java цього вистачає (це лаконічний вираз, *expression*). Але в ідіоматичному FP його можна зробити ще чистішим:
+
+- **FP-стиль через `Option.when` (без магічного `0.0`):**
+  Повертати `0.0`, якщо ціль `<= 0` — це приховування некоректного стану. Краще явно моделювати відсутність результату:
+  ```scala
+  def progressPercent(jar: Jar): Option[Double] =
+    Option.when(jar.goal > 0)((total(jar) / jar.goal) * 100.0)
+  ```
+
+- **Захист на рівні моделі (Make Illegal States Unrepresentable):**
+  Якщо відсікти невалідну ціль ще при створенні об'єкта (`require(goal > 0)` у `case class Jar`), то у самій функції перевірка `if` взагалі не потрібна:
+  ```scala
+  def progressPercent(jar: Jar): Double =
+    (total(jar) / jar.goal) * 100.0
+  ```
+
+- **Об'єктний синтаксис через Scala 3 `extension`:**
+  Щоб викликати розрахунок природно через крапку (`jar.progressPercent`), залишаючи логіку чистою без мутацій:
+  ```scala
+  extension (jar: Jar)
+    def progressPercent: Double =
+      if (jar.goal <= 0) 0.0 else (jar.total / jar.goal) * 100.0
+  ```
+
+#### 2. Як покращити `applyPromoBonus`:
+У нашому коді зараз:
+```scala
+def applyPromoBonus(jar: Jar, bonus: Double): Jar =
+  if (bonus <= 0) jar
+  else addDonation(jar, Donation("промо від банку", bonus))
+```
+Ідіоматичні функціональні альтернативи:
+
+- **Монадичний стиль через `Option.when` + `fold` (без розгалужень `if-else`):**
+  ```scala
+  def applyPromoBonus(jar: Jar, bonus: Double): Jar =
+    Option.when(bonus > 0)(Donation("промо від банку", bonus))
+      .fold(jar)(addDonation(jar, _))
+  ```
+  *(Суть: якщо бонус валідний — створюємо донат і додаємо до банки; якщо ні (`None`) — повертаємо початковий `jar` без змін).*
+
+- **Pattern Matching (інтенція коду наочніша за процедурний `if`):**
+  ```scala
+  def applyPromoBonus(jar: Jar, bonus: Double): Jar = bonus match {
+    case b if b > 0 => addDonation(jar, Donation("промо від банку", b))
+    case _          => jar
+  }
+  ```
+
+- **Типобезпека (заборона нульових чи від'ємних бонусів на рівні типів):**
+  Якщо створити спеціальний тип через патерн **Smart Constructor**, захисні перевірки `if` у бізнес-функціях стають непотрібними:
+  ```scala
+  // 1. Конструктор закритий (private), створення лише через метод from:
+  final case class PositiveAmount private (value: Double)
+
+  object PositiveAmount {
+    def from(raw: Double): Either[String, PositiveAmount] =
+      if (raw > 0) Right(PositiveAmount(raw))
+      else Left(s"Сума має бути > 0, отримано: $raw")
+  }
+
+  // 2. Бізнес-функція гарантовано отримує валідне число від компілятора:
+  def applyPromoBonus(jar: Jar, bonus: PositiveAmount): Jar =
+    addDonation(jar, Donation("промо від банку", bonus.value))
+  ```
+  *(Валідація робиться один раз на межі введення даних: `PositiveAmount.from(input)`, а всередині ядра системи всі суми вже гарантовано коректні).*
+
 ---
+
 
 ## Контрольні питання
 
